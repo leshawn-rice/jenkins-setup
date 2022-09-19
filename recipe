@@ -1,0 +1,102 @@
+# Create the ld-admin group
+
+sudo groupadd ld-admin
+
+# Create the ld-admin user and add them to the su groups
+
+sudo useradd -m -G sudo,syslog,ssh,users,netdev,adm,ld-admin -s /bin/bash ld-admin
+
+# Create a password for ld-admin
+
+sudo passwd ld-admin
+
+# Create the .ssh directory and add authorized_keys to it
+
+sudo mkdir /home/ld-admin/.ssh
+
+sudo touch /home/ld-admin/.ssh/authorized_keys
+
+sudo vim /home/ld-admin/.ssh/authorized_keys
+
+# Update & Upgrade packages on server
+
+sudo apt-get update && sudo apt-get -y upgrade
+
+# Add the jenkins apt repository key
+
+wget -q -O - https://pkg.jenkins.io/debian-stable/jenkins.io.key | sudo apt-key add -
+
+# Add the jenkins repository entry in sources.list.d
+
+sudo sh -c 'echo deb https://pkg.jenkins.io/debian-stable binary/ > /etc/apt/sources.list.d/jenkins.list'
+
+# Update packages again (jenkins will not install properly otherwise)
+
+sudo apt-get update
+
+# Install Java
+
+sudo apt install default-jre
+
+# Update the apt cache & install jenkins
+
+sudo apt-get update
+sudo apt-get install jenkins
+
+# Setup Jenkins
+
+## In a browser, go to http://SERVER_IP:8080 i.e. http://54.36.125.4:8080
+
+### Enter the auth key from /var/lib/jenkins/secrets/initialAdminPassword on the server
+
+### Install plugins
+
+#### mailer
+#### workflow-scm-step
+#### git-client
+#### git
+#### github
+#### ssh-slaves
+#### ssh-credentials
+#### credentials
+#### build-token-root
+
+### Enter login information
+
+#### username: ld-admin
+#### password: LD-ADMIN_PASSWORD
+#### First Name: LD
+#### Last Name: Admin
+#### Email: REPORT_EMAIL (i.e. build-reports@uplevelsystems.com
+
+### Configure the ld-admin user
+
+#### Navigate to SERVER_IP:8080/me/configure
+#### Set ip to be server IP with port of 8080 i.e. 54.36.125.4:8080
+#### Create an API Token with a name of ld-admin-token, copy the somewhere
+
+### Delete default admin user
+
+#### Navigate to SERVER_IP:8080/user/admin/
+#### Delete the user
+
+### Add credentials to ops repo
+
+#### On a device with access to the ops repo
+
+sudo touch ~/l/ops/jenkins/.credentials
+
+# Add the jenkins ld-admin credentials to .credentials
+
+sudo vim ~/l/ops/jenkins/.credentials
+
+#{
+#  "JENKINS_URL": "http://SERVER_IP:8080"
+#  "JENKINS_USER": "ld-admin"
+#  "JENKINS_API_KEY": "LD-ADMIN_API_KEY"
+#}
+
+
+# Disable the default user on the jenkins server
+
+sudo usermod -s /sbin/nologin ubuntu

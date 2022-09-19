@@ -1,0 +1,258 @@
+- name: Provision New Jenkins Server
+  hosts: jenkins
+  become: yes
+
+  vars:
+    root_directory: "/home/{{ LOCAL_USER }}"
+
+  vars_prompt:
+
+  - name: github_username
+    prompt: Github Username
+    confirm: yes
+    private: no
+
+  - name: github_token
+    prompt: Github Token
+    confirm: yes
+
+  tasks:
+    - name: Create ld-admin group
+      group:
+        name: "{{ LOCAL_USER }}"
+        state: present
+
+    - name: Create user
+      user:
+        name: "{{ LOCAL_USER }}"
+        groups:
+          - sudo
+          - syslog
+          - ssh
+          - users
+          - netdev
+          - adm
+          - "{{ LOCAL_USER }}"
+        password: "{{ ld_password | password_hash('sha512') }}"
+        shell: /bin/bash
+
+    - name: Create .ssh directory if not exists
+      file:
+        path: "/home/{{ LOCAL_USER }}/.ssh"
+        state: directory
+        owner: "{{ LOCAL_USER }}"
+        group: "{{ LOCAL_USER }}"
+        mode: go-rwx
+
+    - name: Create authorized_keys file in .ssh directory
+      copy:
+        src: templates/authorized_keys
+        dest: "/home/{{ LOCAL_USER }}/.ssh/authorized_keys"
+        group: "{{ LOCAL_USER }}"
+        owner: "{{ LOCAL_USER }}"
+
+    - name: Update packages
+      apt:
+        update_cache: yes
+        force_apt_get: yes
+      register: update_status
+      until: update_status is success
+      delay: 6
+      retries: 5
+
+    - name: Upgrade packages
+      apt:
+        upgrade: full
+      register: upgrade_status
+      until: upgrade_status.changed == true
+      delay: 6
+      retries: 5
+      ignore_errors: yes
+
+    - name: Add jenkins repo key to apt keys
+      apt_key:
+        url: "https://pkg.jenkins.io/debian-stable/jenkins.io.key"
+        state: present
+
+    - name: Add jenkins repository entry
+      shell: "sh -c 'echo deb https://pkg.jenkins.io/debian-stable binary/ > /etc/apt/sources.list.d/jenkins.list'"
+
+    - name: Install Java
+      apt:
+        force_apt_get: yes
+        name: default-jre
+
+    - name: Update packages
+      apt:
+        update_cache: yes
+        force_apt_get: yes
+      register: update_status
+      until: update_status is success
+      delay: 6
+      retries: 5
+
+    - name: Install Jenkins
+      apt:
+        force_apt_get: yes
+        name: jenkins
+
+    - name: Install ansible
+      apt:
+        force_apt_get: yes
+        name: ansible
+
+    - name: Create initialization scripts directory
+      file:
+        path: /var/lib/jenkins/init.groovy.d
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: 0775
+
+    - name: Add initialization script to setup basic security
+      template:
+        src: templates/security.groovy.j2
+        dest: /var/lib/jenkins/init.groovy.d/basic-security.groovy
+
+    - name: Fix JAVA_ARGS in /etc/default/jenkins
+      replace:
+        path: /etc/default/jenkins
+        regexp: '^"(JAVA_ARGS=.*)"'
+        replace: '"\1 -Djenkins.install.runSetupWizard=false"'
+
+    - name: Restart Jenkins
+      service:
+        name: jenkins
+        state: restarted
+
+    - name: Download jenkins-cli.jar
+      get_url:
+        url: "http://localhost:8080/jnlpJars/jenkins-cli.jar"
+        url_username: "{{ admin_username }}"
+        url_password: "{{ admin_password }}"
+        dest: "{{ root_directory }}/jenkins-cli.jar"
+      register: download_status
+      until: download_status is success
+      retries: 6
+      delay: 10
+
+    - name: Copy scripts directory
+      copy:
+        src: scripts
+        dest: "{{ root_directory }}/"
+        group: root
+        owner: root
+
+    - name: Create scripts_directory var
+      set_fact:
+        scripts_directory: "{{ root_directory }}/scripts"
+
+    - name: Register the output of get-api-key.py into key_output
+      command:
+        cmd: "/usr/bin/python3 get-api-key.py {{ admin_username }}:{{ admin_password }}"
+        chdir: "{{ scripts_directory }}"
+      register: key_output
+
+    - name: Create admin_key variable
+      set_fact:
+        admin_key: "{{ key_output.stdout }}"
+
+    - name: Add .jenkins-cli
+      template:
+        src: templates/jenkins-cli.j2
+        dest: "{{ root_directory }}/.jenkins-cli"
+
+    - name: Install plugins
+      shell: "java -jar {{ root_directory}}/jenkins-cli.jar -s http://localhost:8080/ -auth @{{ root_directory }}/.jenkins-cli install-plugin {{ item }}"
+      with_items:
+        - mailer
+        - workflow-scm-step
+        - workflow-aggregator
+        - git-client
+        - git
+        - github
+        - ssh-slaves
+        - ssh-credentials
+        - credentials
+        - build-token-root
+        - ansible
+
+    - name: Restart Jenkins
+      service: 
+        name: jenkins
+        state: restarted
+
+    - name: Reboot
+      reboot:
+
+    - name: Copy credentials.xml from template
+      template:
+        src: templates/credentials.xml.j2
+        dest: "{{ root_directory }}/credentials.xml"
+
+    - name: Create credential ID
+      shell: 
+        cmd: "java -jar jenkins-cli.jar -s http://localhost:8080/ -auth @.jenkins-cli create-credentials-by-xml system::system::jenkins _ < credentials.xml"
+        chdir: "{{ root_directory }}"
+      register: credential_status
+      until: credential_status is success
+      retries: 10
+      delay: 6
+
+    - name: Delete credentials from server
+      file:
+        path: "{{ root_directory }}/credentials.xml"
+        state: absent
+
+    - name: Delete admin Jenkins user
+      uri:
+        url_username: "{{ admin_username }}"
+        url_password: "{{ admin_key }}"
+        url: "http://localhost:8080/user/admin/doDelete"
+        method: POST
+        force_basic_auth: yes
+        status_code:
+          - 302
+          - 404
+
+    - name: Reset JAVA_ARGS
+      replace:
+        path: /etc/default/jenkins
+        regexp: '^"(JAVA_ARGS=.*) -Djenkins.install.runSetupWizard=false'
+        replace: '"\1"'
+
+    - name: Delete init.groovy.d directory
+      file:
+        path: /var/lib/jenkins/init.groovy.d
+        state: absent
+
+    - name: Restart Jenkins
+      service:
+        name: jenkins
+        state: restarted
+
+    - name: Update hostname
+      copy:
+        content: jenkins-server
+        dest: /etc/hostname
+
+    - name: Reboot
+      reboot:
+
+      # can delete if we stop the systemd service first
+    - name: Disable default user
+      shell: "usermod -s /sbin/nologin ubuntu"
+
+- name: Add jenkins .credentials to local machine/ops repo
+  hosts: localhost
+
+  vars:
+    JENKINS_URL: "{{ groups['jenkins'][0] }}"
+    JENKINS_USER: "{{ hostvars[JENKINS_URL]['admin_username'] }}"
+    JENKINS_API_KEY: "{{ hostvars[JENKINS_URL]['admin_key'] }}"
+
+  tasks:
+    - name: Create credentials file
+      template:
+        src: templates/credentials.j2
+        dest: "/home/{{ ansible_user_id }}/l/ops/jenkins/.credentials"
